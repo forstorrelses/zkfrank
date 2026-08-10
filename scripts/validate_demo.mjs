@@ -16,6 +16,8 @@ const LINES = {
     day: (d) => `day     : ${d.day}`,
     'proof:start': () => 'proof   : building...',
     'claim:ok': (d) => `claim   : accepted in ${d.ms} ms`,
+    'block:mined': (d) =>
+        `block   : #${d.number} ${d.hash.slice(0, 18)}... tx ${d.txHash.slice(0, 18)}...`,
     'replay:start': () => 'replay  : claiming the same card again, same day...',
     'replay:blocked': (d) => `replay  : rejected, nullifier ${d.nullifier} already spent`,
     done: () => 'done',

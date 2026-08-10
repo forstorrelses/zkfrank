@@ -137,8 +137,34 @@ export async function runClaim(emit) {
     // commitment, and this is the first claim today.
     emit('proof:start', {});
     const startedAt = Date.now();
-    await contract.methods.validate(studentId, secret, signature, day).send({ from: student });
+    const { receipt } = await contract.methods
+        .validate(studentId, secret, signature, day)
+        .send({ from: student });
     emit('claim:ok', { ms: Date.now() - startedAt });
+
+    // 5b. The block the claim landed in. TxReceipt declares blockNumber and
+    // blockHash optional because the same type also describes a pending tx;
+    // send() waits for mining, so on this path they are always set and their
+    // absence means the receipt is not what we think it is.
+    if (receipt.blockNumber === undefined || receipt.blockHash === undefined) {
+        throw new Error(`Mined receipt without a block: ${JSON.stringify(receipt)}`);
+    }
+    // The timestamp has to come from the block, not from Date.now(): the local
+    // network warps its clock forward, and the wall clock here would disagree
+    // with the chain by days.
+    const header = await node.getBlockHeader(receipt.blockNumber);
+    if (!header) {
+        throw new Error(`The node has no header for block ${receipt.blockNumber}`);
+    }
+    emit('block:mined', {
+        number: receipt.blockNumber,
+        hash: receipt.blockHash.toString(),
+        txHash: receipt.txHash.toString(),
+        status: receipt.status,
+        // Seconds since the epoch as a Number: it is a bigint on the header and
+        // JSON.stringify refuses to serialise those.
+        timestamp: Number(header.globalVariables.timestamp),
+    });
 
     // 6. The same card, the same day, a second time. This failure is the result,
     // so it is the one place a catch belongs.
