@@ -172,6 +172,49 @@
   .verdict { font-weight: 600; }
   .verdict.ok { color: var(--ok); }
   .verdict.bad { color: var(--bad); }
+
+  /* ---- saved blocks --------------------------------------------------- */
+
+  .ledger { margin-top: 1rem; }
+  .ledger .head { display: flex; align-items: baseline; gap: .8rem; }
+  .ledger .head h2 { flex: 1; }
+  .ledger .hint { color: var(--muted); font-size: .78rem; margin: -.3rem 0 .9rem; }
+
+  .link {
+    font: inherit; font-size: .74rem; font-weight: 500;
+    background: none; color: var(--muted); border: 1px solid var(--line);
+    border-radius: 7px; padding: .25rem .6rem;
+  }
+  .link:hover:not(:disabled) { color: var(--text); border-color: #33405c; transform: none; }
+
+  .chain { display: flex; gap: .55rem; overflow-x: auto; padding-bottom: .5rem; }
+  .chain .empty { color: var(--muted); font-size: .84rem; padding: .6rem 0; }
+
+  .block {
+    flex: 0 0 250px;
+    position: relative;
+    background: #0e1420; border: 1px solid #2c3160; border-left: 3px solid var(--public);
+    border-radius: 10px; padding: .7rem .8rem;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .72rem;
+  }
+  /* The connector that makes the row read as a chain: every block but the
+     newest one is linked to the block on its left. */
+  .block + .block::before {
+    content: ""; position: absolute; left: -.58rem; top: 50%;
+    width: .55rem; height: 2px; background: #3b4383;
+  }
+  .block.fresh { animation: pop .5s ease-out; }
+  @keyframes pop {
+    from { opacity: 0; transform: translateY(10px) scale(.96); }
+    to   { opacity: 1; transform: none; }
+  }
+
+  .block .no { color: var(--public); font-size: .95rem; font-weight: 600; }
+  .block .when { color: var(--muted); font-size: .68rem; margin-bottom: .5rem; }
+  .block dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: .18rem .5rem; }
+  .block dt { color: var(--muted); }
+  .block dd { margin: 0; word-break: break-all; }
+  .block dd.pending { color: var(--muted); }
 </style>
 </head>
 <body>
@@ -232,6 +275,18 @@
       <pre id="log"></pre>
     </div>
   </div>
+
+  <div class="panel ledger">
+    <div class="head">
+      <h2>Blocks on our chain</h2>
+      <button class="link" id="clear">clear</button>
+    </div>
+    <p class="hint">
+      Every accepted claim, as the chain recorded it. No student id anywhere in here —
+      that is the point.
+    </p>
+    <div class="chain" id="blocks"></div>
+  </div>
 </div>
 
 <script>
@@ -287,6 +342,94 @@ function sendChip(label, { to = 56, dissolve = true, kind = 'private' } = {}) {
   }, 1600);
 }
 
+// ---- the saved ledger -------------------------------------------------
+//
+// Kept in localStorage rather than in a file on the server: this is a record of
+// what the demo showed, not chain state. The chain already holds the real
+// blocks; losing this list costs nothing.
+
+const STORE = 'zkfrank.blocks';
+const MAX_BLOCKS = 50;
+
+// Filled in during a run, so the block can be saved with the day it was claimed
+// on and, once the replay fails, with the nullifier that stopped it.
+let chainDay = '';
+let savedTxHash = null;
+
+const loadBlocks = () => JSON.parse(localStorage.getItem(STORE) ?? '[]');
+const saveBlocks = (blocks) =>
+  localStorage.setItem(STORE, JSON.stringify(blocks.slice(0, MAX_BLOCKS)));
+
+const short = (hex) => (hex.length > 22 ? `${hex.slice(0, 12)}…${hex.slice(-6)}` : hex);
+
+function row(dl, key, value, pending = false) {
+  const dt = document.createElement('dt');
+  dt.textContent = key;
+  const dd = document.createElement('dd');
+  dd.textContent = value;
+  if (pending) { dd.className = 'pending'; }
+  dl.append(dt, dd);
+}
+
+// Built out of DOM nodes on purpose: hashes go in through textContent, so no
+// value from the stream is ever parsed as markup.
+function renderBlocks(freshTxHash = null) {
+  const el = $('#blocks');
+  el.textContent = '';
+
+  const blocks = loadBlocks();
+  if (blocks.length === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'empty';
+    empty.textContent = 'No blocks yet — tap a card.';
+    el.append(empty);
+    return;
+  }
+
+  for (const b of blocks) {
+    const card = document.createElement('div');
+    card.className = b.txHash === freshTxHash ? 'block fresh' : 'block';
+
+    const no = document.createElement('div');
+    no.className = 'no';
+    no.textContent = `block #${b.number}`;
+
+    const when = document.createElement('div');
+    when.className = 'when';
+    // The chain's own timestamp, not this machine's: the local network warps
+    // its clock, so the two disagree and the chain is the one that counts.
+    when.textContent = `${new Date(b.timestamp * 1000).toLocaleString()} · chain time`;
+
+    const dl = document.createElement('dl');
+    row(dl, 'tx', short(b.txHash));
+    row(dl, 'hash', short(b.hash));
+    row(dl, 'day', b.day);
+    row(dl, 'status', b.status);
+    row(dl, 'nullifier', b.nullifier ? short(b.nullifier) : 'not revealed', !b.nullifier);
+
+    card.append(no, when, dl);
+    el.append(card);
+  }
+}
+
+function addBlock(block) {
+  saveBlocks([block, ...loadBlocks()]);
+  renderBlocks(block.txHash);
+}
+
+// The replay reveals the nullifier the first claim had already spent, so it
+// belongs on the block that spent it.
+function attachNullifier(txHash, nullifier) {
+  const blocks = loadBlocks();
+  const block = blocks.find((b) => b.txHash === txHash);
+  if (!block) {
+    throw new Error(`No saved block for tx ${txHash}`);
+  }
+  block.nullifier = nullifier;
+  saveBlocks(blocks);
+  renderBlocks();
+}
+
 const HANDLERS = {
   'card:waiting': () => { activate('card'); log('waiting for a card…'); },
 
@@ -307,7 +450,7 @@ const HANDLERS = {
     log('attached to the deployed contract');
   },
 
-  day: (d) => { setFact('day', d.day); log(`chain says day ${d.day}`); },
+  day: (d) => { chainDay = d.day; setFact('day', d.day); log(`chain says day ${d.day}`); },
 
   'proof:start': () => {
     activate('pxe');
@@ -321,11 +464,18 @@ const HANDLERS = {
     setTimeout(() => { complete('chain'); activate('result'); }, 900);
   },
 
+  'block:mined': (d) => {
+    log(`mined into block #${d.number}`, 'ok');
+    savedTxHash = d.txHash;
+    addBlock({ ...d, day: chainDay, nullifier: null });
+  },
+
   'replay:start': () => { log('same card, same day, second attempt…'); },
 
   'replay:blocked': (d) => {
     complete('result');
     setFact('nullifier', d.nullifier, 22);
+    attachNullifier(savedTxHash, d.nullifier);
     stageEl('chain').classList.remove('active');
     stageEl('chain').classList.add('failed');
     log('rejected: nullifier already spent — one discount per day', 'ok');
@@ -360,6 +510,8 @@ $('#run').addEventListener('click', () => {
   stages.forEach((s) => s.dataset.side === 'public'
     ? s.setAttribute('data-side', 'public') : s.setAttribute('data-side', 'private'));
   document.querySelectorAll('.v').forEach((v) => v.textContent = '—');
+  chainDay = '';
+  savedTxHash = null;
 
   t0 = Date.now();
   ticker = setInterval(() => {
@@ -374,9 +526,18 @@ $('#run').addEventListener('click', () => {
   es.onerror = () => { es.close(); finish(); };
 });
 
+$('#clear').addEventListener('click', () => {
+  if (confirm('Forget every saved block?')) {
+    localStorage.removeItem(STORE);
+    renderBlocks();
+  }
+});
+
 // The stage cards lose their data-side attribute when reset above; restore the
 // original assignment once at load so the reset can rely on it.
 stages.forEach((s, i) => s.setAttribute('data-side', i < 3 ? 'private' : 'public'));
+
+renderBlocks();
 </script>
 </body>
 </html>
